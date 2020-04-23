@@ -1,7 +1,7 @@
 ---
-title: "WorkingNotebook1"
+title: "iRIGS local R implementation"
 author: "Colleen Xu"
-date: "1/14/2020-2/12/2020"
+date: "Winter - Spring 2020"
 output: 
   html_document:
       code_folding: hide  # there is a toggle to allow reader to see code for code blocks with include=TRUE
@@ -11,7 +11,7 @@ output:
       theme: readable
 ---
 
-```{r setup, results='hide'}
+```{r setup, results='hide', message = FALSE}
 knitr::opts_chunk$set(echo = TRUE, message = FALSE)
 
 library(tidyverse)
@@ -27,64 +27,76 @@ here()  ## set "home" location for relative paths.
 
 ## Intro
 
-This is an R-notebook re-implementation of iRIGS (Integrative framework for Risk Gene Selector). The [original R code](https://www.vumc.org/cgg/irigs) was released by the Computational Genetics and Genomics Lab at Vanderbilt University as part of the [*Nature Methods* paper](https://www.ncbi.nlm.nih.gov/pubmed/30988527):  
+This is a Python3 Jupyter-notebook implementation of iRIGS (Integrative framework for Risk Gene Selector). **The notebook explains how the algorithms are implemented in detail, and it can be used to start modifying iRIGS for other studies/use cases/input data.** The [original R code](https://www.vumc.org/cgg/irigs) was released by the Computational Genetics and Genomics Lab at Vanderbilt University as part of the [*Nature Methods* paper](https://www.ncbi.nlm.nih.gov/pubmed/30988527):   
 
-Wang Q, Chen R, Cheng F, Wei Q, Ji Y, Yang H, et al. A Bayesian framework that integrates multi-omics data and gene networks predicts risk genes from schizophrenia GWAS data. Nature Neuroscience. 2019 May;22(5):691–9.  
+Wang Q, Chen R, Cheng F, Wei Q, Ji Y, Yang H, et al. A Bayesian framework that integrates multi-omics data and gene networks predicts risk genes from schizophrenia GWAS data. Nature Neuroscience. 2019 May;22(5):691–9.    
 
-I relied heavily on the methods of this paper and its [Supplementary Note](https://www.nature.com/articles/s41593-019-0382-7#Sec26).  
+I relied heavily on the methods of this paper and its [Supplementary Note](https://www.nature.com/articles/s41593-019-0382-7#Sec26). **Below, I assume that the user of this notebook has downloaded the data from https://www.vumc.org/cgg/irigs and the notebook is in the same level/directory as the supporting_files directory and SNP_file directory.**      
 
-**My implementation differs from the original code in several ways. All major changes are noted and explained in detail throughout the notebook. A brief description of changes:**   
+**My implementation differs from the original code in several ways. All major changes are noted and explained in detail throughout the notebook. A brief description of changes:**    
 
-* Using tidyverse, matrix/dataframe objects, and here packages  
-* Preprocessing the input gene information differently, before picking genes from flanking regions around GWAS SNPs   
-* Treating missing values for numbers of enhancers the same (replaced with zeroes)
-* reproducing the *Nature Methods* paper's Supplementary Table 1 as output  
+* Using tidyverse, matrix/dataframe objects, and here packages   
+* Preprocessing the input gene information differently and before picking genes from flanking regions around GWAS SNPs   
+* Treating missing values for numbers of enhancers the same (replaced with zeroes)   
+* Gibbs sampling is not done on SNP loci with only one candidate gene.  
+* Reproducing the *Nature Methods* paper's Supplementary Table 1 as output   
+
+This code is designed to be relatively simple, without much vectorizing/optimization with packages.   
+
+**Hanging Questions (not yet addressed):**    
+
+* There is a matrix included in the supporting files (go_propogation_probality_rp_0.3.RData). Is this matrix the transition probabilities, calculated from running random walk with restart until the stopping threshold was reached? Or is this the normalized weighted adjacency matrix for the GO-annotation-edge-weight network?   
+* A normal distribution is assumed for the transformed variables created by the Mahalanobis transformation. However, my qq plots and normality tests on the variables fail to show that the variables are normally distributed. Would one proceed with using the normal distribution to get p-values (after all, the transformation is supposed to create variables that follow a normal distribution)? Or would one look to see if another distribution is a better fit?    
+* The probability of a gene having a de novo mutation associated with schizophrenia (used as a p-value) is calculated  using a hard-coded denominator of 20,000. How was this number chosen (is it the assumed number of genes in the genome)?    
+* What is the rationale for getting the negative log of the combined p-values (from Fisher's method) (extra_evi.R line 187)? I assumed that it was because the negative log would be a continuous measure of information, where a greater number would indicate more evidence that the candidate gene was a risk gene. (ref: https://lesslikely.com/statistics/s-values/)   
+* I am confused by extra_evi.R line 202, where it appears that only one surrogate Bayes factor is kept per gene name. What is the rationale for this? My thinking is that since the surrogate Bayes factor includes "distance to SNP" as input, the factor differs depending on which SNP a given gene is associated with. I have therefore kept all the calculated surrogate Bayes factors in my implementation of iRIGS; during Gibbs sampling, the Bayes factors specific to the sampled SNP locus and candidate genes are pulled.      
 
 ### Description of iRIGS
 
-This framework was designed to find the genes "most likely" to be disease risk genes. Starting with schizophrenia (SCZ) GWAS data, the genes neighboring the SNPs (loci) are found. During Gibbs sampling, the genes for a loci are weighed based on:  
+This framework was designed to find the genes "most likely" to be disease risk genes. Starting with schizophrenia (SCZ) GWAS data, the genes neighboring the SNPs (loci) are found. During Gibbs sampling, the candidate genes for a SNP loci are weighed based on:   
 
-* their "closeness" to the other sampled genes (in other loci) in a gene-gene network made by the authors   
-  - with the code, the iRIGS authors provided the transition probability matrix obtained by running the random walk with restart (RWR) algorithm on their original network. Their original network was dense, with edge weights between genes based on shared GO annotations. {?? how was this made? Is this the transition probabilities from the RWR or just the normalized weighted adjacency matrix for the original network? }  
-* their genomic distance from the SNP (Transcription start site (TSS) to SNP in genomic coordinates): abbreviated DTS (distance from transcription start) 
-  - based on gene information file provided by iRIGS authors {?? Is where did this come from / when downloaded?}  
-* the number of enhancers (predicted distal regulatory element (DRE) - promoter links) they have  
+* their "closeness" to the other sampled genes (around other SNP loci) in a gene-gene network made by the authors    
+  - with the code, the iRIGS authors provided what I believe is the transition probability matrix obtained by running the random walk with restart (RWR) algorithm on their original network. Their original network was dense, with edge weights between genes based on shared GO annotations. {? See the "Hanging questions" section above: Is this the transition probabilities from the RWR or just the normalized weighted adjacency matrix for the original network? We are missing code to generate this matrix and explore the original network.}    
+* their genomic distance from the SNP (distance from gene transcription start site (TSS) to SNP in genomic coordinates): abbreviated DTS (distance from transcription start)    
+  - based on gene information file provided by iRIGS authors {? We are missing metadata on where it was downloaded from and when}     
+* the number of enhancers (predicted distal regulatory element (DRE) - promoter links) they have   
   - Brain HiC data from [the developing cerebral cortex - cortical/subcortical plate (CP) and germinal zone (GZ), Supplementary Tables 23 and 24](https://www.nature.com/articles/nature19847#Sec31): tsv versions provided by iRIGs authors     
-  - CapHiC data from the cell line GM12878 (not specific to brain): processed data file provided by iRIGs authors        
-  - FANTOM5 data: data file provided by iRIGs authors {?? old version?}    
-* de novo mutation (DNM) data for schizophrenia from literature: processed data files provided by iRIGS authors   
-* differential expression (DE) data comparing schizophrenia vs control cases from the Commonmind consortium: data file provided by iRIGS authors     
+  - CapHiC data from the cell line GM12878 (not specific to brain): processed data file provided by iRIGs authors {? We are missing code on how to generate this file from "raw data files" from ArrayExpress}           
+  - FANTOM5 data: data file provided by iRIGs authors {? We are missing metadata on where it was downloaded from and when. I'm not sure if this includes all tissues or not.}   
+* de novo mutation (DNM) data for schizophrenia from literature: processed data files provided by iRIGS authors {? We are missing code on how to generate this file}    
+* differential expression (DE) data comparing schizophrenia vs control cases from the Commonmind consortium: data file provided by iRIGS authors {? It is unclear if this file was made manually or with a code pipeline}       
 
-Notes:  
-* It is assumed that a gene with more "incoming regulatory links" (enhancers) is more likely to be a disease gene (discussed in the original paper).  
-* All genomic coordinates are in hg19 (GRCh37).  
+**Assumptions:**  
+* It is assumed that a gene with more "incoming regulatory links" (enhancers) is more likely to be a disease gene (discussed in the original paper).    
+* All genomic coordinates are in hg19 (GRCh37).                  
 
 ## Setting arguments
-**Changed from original paper to save the original results file and a table similar to iRIGS authors' Supplementary Table 1.** Arguments in order, 5 total:  
+**Changed from original paper to save the original results file and a table similar to iRIGS authors' Supplementary Table 1.** Arguments in order, 5 total:   
 
-* SNP_file: path of file with GWAS SNPs. The file must include three columns named (case matters): SNP, Chr, and Pos_hg19   
-* flank: integer (in bp, recommended by iRIGS authors: 1000000 for a 2MB flanking region total). The flanking region is the region *flank* base-pairs upstream and *flank* base-pairs downstream of a GWAS SNP. In other words, *flank* is 1/2 the length of the flanking region. Genes in the flanking region will be used as candidate genes during Gibbs sampling    
-* path for result files directory   
+* SNP_file: path of file with GWAS SNPs. The file must include three columns named (case matters): SNP, Chr, and Pos_hg19         
+* flank: integer (in bp, recommended by iRIGS authors: 1000000 for a 2MB flanking region total). The flanking region is the region between *flank* base-pairs upstream and *flank* base-pairs downstream of a GWAS SNP. In other words, *flank* is 1/2 the length of the flanking region. Genes in the flanking region will be used as candidate genes during Gibbs sampling    
+* path for result files directory    
 * path for original type of result file    
-* path for result file of the same format as Supplementary Table 1 from the paper   
+* path for result file of the same format as Supplementary Table 1 from the paper    
 
 **Remember to change these last two parameters between runs if you don't want to rewrite your files.**   
 
-Below, I assume that the user of this notebook has downloaded the data from https://www.vumc.org/cgg/irigs and the notebook is in the same level/directory as the supporting_files directory and SNP_file directory.  
+**Below, I assume that the user of this notebook has downloaded the data from https://www.vumc.org/cgg/irigs and the notebook is in the same level/directory as the supporting_files directory and SNP_file directory.**    
 ```{r arguments}
-arguments <- c(here("SNP_file", "SCZ_108_loci"), 
-               1000000, 
-               here("iRIGS_results"), 
-               here("iRIGS_results", "SCZ_trial1_original.txt"), 
-               here("iRIGS_results", "SCZ_trial1_supple1.txt"))
+arguments <- c(here("SNP_file", "SCZ_108_loci"),   ## SNP_file
+               1000000,    ## flank
+               here("iRIGS_results"),    ## path for results file directory
+               here("iRIGS_results", "SCZ_trial1_original.txt"),   ## path for original result file
+               here("iRIGS_results", "SCZ_trial1_supple1.txt"))    ## path for supplementary table 1 file
 ```
 
 ## Find candidate genes for each SNP 
 
-**CHANGES from original code:** 
-* I am filtering the human gene list BEFORE finding candidate genes for SNPs; this should make the search for candidate genes more efficient.  
-* I am filtering differently: original code relies heavily on the "official_name" column, but I will be working with ENSG IDs ("Name" column) and the "alias_symbol" column instead. There is an EDA code chunk showing the reasons for the change.   
-* I chose to drop certain genes because they were completely unconnected in the network. With the current framework design, these genes end up with a "network" factor of 0 and would not be chosen during the random sampling (unless all genes in a SNP locus/flank were in this situation - then a uniform probability of picking a gene would be implemented).  
+**CHANGES from original code:**    
+* I am filtering the human gene list BEFORE finding candidate genes for SNPs; this should make the search for candidate genes more efficient.    
+* I am filtering differently: original code relies heavily on the "official_name" column, but I will be working with ENSG IDs ("Name" column) and the "alias_symbol" column instead. There is an EDA code chunk showing the reasons for the change.     
+* I chose to drop certain genes because they were completely unconnected in the network. With the current framework design, these genes end up with a "network" factor of 0 and would not be chosen during the random sampling (unless all candidate genes for a SNP were in this situation - then a uniform probability of picking a gene would be implemented).     
+**Reminder: I assume that the user of this notebook has downloaded the data from https://www.vumc.org/cgg/irigs and the notebook is in the same level/directory as the supporting_files directory and SNP_file directory.**     
 
 ### Load gene info, gene-gene network transition probabilities 
 ```{r loading1}
@@ -96,7 +108,7 @@ load(network_path)  ## loads pro_p: a dataframe with rownames and colnames
 
 network_genes <- colnames(pro_p)  ## record vector of genes in network
 # table(rownames(pro_p)==colnames(pro_p))  ## shows that rownames and colnames are the same
-# length(unique(colnames(pro_p)))  ## shows that all gene symbols are unique
+# length(unique(colnames(pro_p)))  ## shows that all gene symbols in the network are unique
 
 network_matrix = pro_p  ## renamed  
 
@@ -108,28 +120,33 @@ gene_info <- read_delim(gene_info_path, delim = "\t")  # tibble: 53934 rows
 remove(network_path, gene_info_path, pro_p)
 ```
 
-### EDA showing concerns with gene info's official_name column
+### EDA showing concerns with gene info's official_name column  
 
-First, rows may have the same official_name values but different information (Name, alias_symbol, genomic coordinates). All rows have unique Name column values (Ensembl IDs), but there are some rows with shared official_name values and some rows with shared alias_symbol values.  
+**Optional code chunks (don't have to run).**   
 
-I checked rows where official_name=="AGAP4" and "CX3CR1" and found that **rows with the same official_name actually describe different genes. The IDs in the alias_symbol and Name columns are correct and reliable, and the IDs in the official_name column are not reliable.**  
+First, rows may have the same official_name values but different information (Name, alias_symbol, genomic coordinates). All rows have unique Name column values (Ensembl IDs), but there are some rows with shared official_name values and some rows with shared alias_symbol values.     
+
+I checked rows where official_name is "AGAP4" and where it was "CX3CR1". I found that **rows with the same official_name actually describe different genes. The IDs in the alias_symbol and Name columns are correct and reliable, and the IDs in the official_name column are not reliable.**     
+
+This can be explored in the code chunks below.    
 ```{r edaGeneSet, eval=FALSE}
 skim(gene_info)  ## note that all ENSG IDs (Name col) are unique
 
-## find rows with the same official_name values in the GO network
+## find rows of gene information with the same official_name values that are in the gene network
 ex0 <- gene_info %>% 
   group_by(official_name) %>% 
   summarize(count = n()) %>%
   filter(count > 1, official_name %in% network_genes)
 
-## look at these rows with the same official_names
 ## notice that there are rows where the alias_symbol differs between rows but the official_name doesn't
 gene_info %>%
   filter(official_name %in% ex0$official_name) %>%
   select(Name, official_name, alias_symbol, chrom, start_hg19, end_hg19, strand) %>% 
   arrange(official_name)
+```
 
-## If I remove rows where official_name is missing (NA), I lose information on genes in my network. 
+Second, if I remove rows where the official_name value is missing (NaN), I lose information on genes in my network.    
+```{r edaGeneSet=2, eval=FALSE}
 gene_info %>% 
   filter(is.na(official_name), alias_symbol %in% network_genes) %>% 
   select(Name, alias_symbol, gene_status, gene_type) %>% 
@@ -138,9 +155,17 @@ gene_info %>%
 remove(ex0)
 ```
 
-### EDA showing unconnected genes in network  
+### Must Run: EDA showing unconnected genes in network  
+
+Must run this chunk so the filtering in the next code chunk works.   
+
+There are 1296 genes that have row and column sums of 0.3, with the self-edge (gene A - gene A entry in the matrix) being 0.3. This means that when Gibbs sampling is done, their network factor as a candidate gene is always 0 - leading to a probability weighting of 0 since self-edge weights are not included. The genes are therefore NEVER being picked in a sample. It is then inefficient to keep these genes in the calculation, so I chose to filter them out.    
+
+The code chunk below can be used to explore this.    
 ```{r edaconnect}
-## some of the column sums of the matrix are only 0.3 (the probability that the walk stays at the current node), which is odd. The other columns sum ~ 1. 
+## some of the column sums of the matrix are only 0.3 (the probability that the walk stays at the current node), 
+##        which is odd. The other columns sum ~ 1. 
+## This takes about 20 seconds to run
 networkcolsums = colSums(network_matrix)
 
 head(table(networkcolsums))
@@ -154,26 +179,30 @@ network_matrix['AAED1','AAED1']
 
 ## look at the row sum for this gene: same issue - the values relating this node to other nodes is 0
 sum(network_matrix[15,])
+## can also check the other row sums: row 21, 206, 558, etc. 
 ```
 
-### Filtering to get information for genes in network 
+### Filtering to get the input gene set (to look for candidates within)
 
-Note that the R duplicated() function was not used since it will not return all non-unique rows. It will only return the second/duplicate row.  
+Note that the R duplicated() function was not used since it will not return all non-unique rows. It will only return the second/duplicate row.    
 
-The final gene_info dataframe has only connected genes that are in the gene-gene network. There are 17035 rows (unique Ensembl IDs in the 'Name' column) and 17017 unique gene symbols (alias_symbol column). The duplicate gene symbols are from 18 pseudoautosomal genes.   
-```{r filteringfull}
+```{r filtering1}
 unconnected <- names(which(networkcolsums == 0.3))
 ## get genes that are connected: removes 1296 genes 
 network_matrix <- network_matrix %>% filter(!(network_genes %in% unconnected)) %>% select(-unconnected)
-rownames(network_matrix) <- colnames(network_matrix)  ## somehow rownames got removed...
+rownames(network_matrix) <- colnames(network_matrix)  ## somehow rownames got removed...add them back
 
 network_genes <- colnames(network_matrix)  ## update
 
 gene_info <- gene_info %>% 
   filter(gene_info$alias_symbol %in% network_genes) 
-## now have 17064 rows with 17017 unique gene symbols (alias_symbol)
-# length(unique(gene_info$alias_symbol)) 
 
+length(unique(gene_info$alias_symbol)) 
+```
+
+There are now 17062 rows in gene_info with 17017 unique gene symbols (alias_symbol). The below code chunk shows that there are 90 rows / 2 rows per alias symbol = 45 unique alias symbols.   
+
+```{r filtering2}
 ## looking at rows with the same alias_symbol
 ex1 <- gene_info %>% 
   group_by(alias_symbol) %>% 
@@ -186,7 +215,12 @@ ex1 <- gene_info %>%
 ex1 <- gene_info %>% 
   filter(alias_symbol %in% ex1$alias_symbol) %>% 
   arrange(alias_symbol)
+```
 
+After [looking through](http://grch37.ensembl.org/Homo_sapiens/Info/Index)  the Name column (ENSEMBL IDs), I found that some 'duplicate' alias symbols were different transcripts - where one was matched the Ensembl version. I went through those manually to create the array of IDs that matched the Ensembl version.   
+
+The rest of the 'duplicate' alias symbols are legit. They are pseudoautosomal regions, which are matched regions on the X and Y chromosomes. These genes therefore have two loci/sets of genomic coordinates for the SAME gene symbol. Source (has more genes than those in my list below): https://www.genenames.org/data/genegroup/#!/group/714    
+```{r filtering3}
 ## I went through these manually to find the correct rows (ENSG IDs) to keep.  
 correct_versions <- c("ENSG00000258315.1",  # C17orf49
                       "ENSG00000258713.1",  # C20orf141: this row has different coordinates from ENSEMBL (ENSEMBL has Chromosome 20: 2,795,633-2,796,479) 
@@ -207,11 +241,10 @@ correct_versions <- c("ENSG00000258315.1",  # C17orf49
                       "ENSG00000179909.9", "ENSG00000257591.1"  # ZNF154, ZNF625
 )
 
-## note that some duplication of alias symbols are legit. Pseudoautosomal regions are matched regions on the X and Y chromosomes, and genes there have two loci/sets of genomic coordinates for the SAME gene symbol.
+## Pseudoautosomal genes 
 pseudoautosomal_list <- c("AKAP17A", "ASMT", "ASMTL", "CD99", "CRLF2", "CSF2RA", "DHRSX", "GTPBP6",
                           "IL3RA", "IL9R", "P2RY8", "PLCXD1", "PPP2R3B", "SHOX", "SLC25A6", "SPRY3", 
                           "VAMP7", "ZBED1")  
-## source (has more genes than those listed above): https://www.genenames.org/data/genegroup/#!/group/714
 
 ## this df has the rows I want to remove from gene_info
 ex1 <- ex1 %>% 
@@ -224,8 +257,10 @@ gene_info <- gene_info %>%
 remove(ex1, correct_versions, unconnected, networkcolsums)
 ```
 
+The final gene_info table only has genes in the connected part of the gene-gene network. There are 17035 rows (unique Ensembl IDs in the 'Name' column) and 17017 unique gene symbols (alias_symbol column). The duplicate gene symbols are from 18 pseudoautosomal genes.    
+
 ### Get GWAS SNP info
-**CHANGES from original code:** removed check on flank_length > 0
+**CHANGES from original code:** removed check on flank_length > 0    
 
 ```{r getSNPs}
 gwas_file_path <- arguments[1]
@@ -253,7 +288,8 @@ remove(gwas_file_path)
 
 ### Find candidate genes around GWAS SNPs      
 
-Because pseudoautosomal genes are on different chromosomes, this flanking method of getting candidate genes will NEVER pick up both copies of a pseudoautosomal gene. **This means that within each candidate gene set for a SNP, there will only be unique alias_symbol values and we can use this column going forward to ID genes.** 
+Because pseudoautosomal genes are on different chromosomes, this method of getting candidate genes that neighbor SNPs will NEVER pick up both copies of a pseudoautosomal gene. **This means that within each candidate gene set for a SNP, alias_symbol values will be unique and we can use this column going forward to ID genes/rows.**   
+
 ```{r loopFindCandidates}
 candidate_genes <- data.frame()  ## initialize. for loop will fill this. 
 
@@ -293,13 +329,22 @@ vector_SNPloci <- unique(candidate_genes$SNP)
 vector_uniquecandidates <- unique(candidate_genes$alias_symbol)
 
 cat(paste(length(vector_uniquecandidates), "unique ENSG IDs (genes) near", length(vector_SNPloci), "GWAS SNPs were found...\n"))
-## note that 1637 rows with 1577 unique ENSG IDs exist: some SNP loci have the same genes. 
+```
+
+There are 1637 rows in the candidate_genes dataframe but only 1577 unique genes, which means that some SNP loci have the same candidate genes. As shown in the code chunk below, there are no pseudoautosomal genes in this set. Also, one SNP had no candidate genes and is not in the dataframe.    
+
+```{r eda_cand}
 # candidate_genes %>% filter(alias_symbol %in% pseudoautosomal_list)  
 ## There are no pseudoautosomal genes in this set.    
 
 ## one SNP out of 108 had no candidate genes found: chr2_146436222_I
 # candidate_genes %>% filter(SNP == "chr2_146436222_I")
+```
 
+## Processing network and supporting evidence  
+
+### Filter network adjacency matrix  
+```{eda filtermat}
 ## original code only filters columns and NOT rows. I filter both since they only work with candidate genes in the end
 network_matrix <- network_matrix[vector_uniquecandidates, vector_uniquecandidates] # 1577 x 1577 
 
@@ -310,9 +355,7 @@ candidate_genes <- candidate_genes %>%
 remove(vector_uniquecandidates)
 ```
 
-## Adding supporting evidence 
-
-### Supporting evidence #1: distance from SNP to gene transcription start site (TSS) (DTS)
+### Supporting evidence #1: distance from SNP to gene transcription start site (TSS) (DTS)  
 ```{r DTSvar}
 candidate_genes <- candidate_genes %>% 
   mutate(DTS = if_else(strand == "+",  # if gene is on strand + 
@@ -321,6 +364,8 @@ candidate_genes <- candidate_genes %>%
 ```
 
 ### Supporting evidence #2: Schizophrenia (SCZ) de novo mutation (DNM) data  
+
+Thoughts: Why did the authors remove "start_lost" information (one row of info)?   
 ```{r DeNovoMut}
 ## get DNM data from one file
 dnm_path_s3 <- here("supporting_files", "SCZ_DNM", "2014_Feb_De_novo_mutation_in_SCZ_Nature_623_trios_s3.txt")
@@ -345,8 +390,8 @@ dnm <- dnm %>%
            (`Gene annotations` != "silent,silent") & (`Gene annotations` != "start-lost")) 
 ```
 
-### Supporting evidence #3: SCZ-specific differential expression (DE) data  
-This data is already in p-value form  
+### Supporting evidence #3: SCZ-specific differential expression (DE) data    
+This data is already in p-value form    
 ```{r DE}
 de_path <- here("supporting_files", "SCZ_DE", "CMC_MSSM-Penn-Pitt_DLPFC_mRNA_IlluminaHiSeq2500_gene-adjustedSVA-differentialExpression-includeAncestry-DxSCZ-DE.tsv")
 dexpr <- read_delim(de_path, delim = "\t")
@@ -354,7 +399,7 @@ dexpr <- read_delim(de_path, delim = "\t")
 remove(de_path)
 ```
 
-### Supporting evidence #4-5: brain Hi-C data (CP + GZ)
+### Supporting evidence #4-5: brain Hi-C data (CP + GZ)   
 ```{r brainHiC}
 cp_path <- here("supporting_files", "BrainHiC", "S22_TSS_CP.txt")
 gz_path <- here("supporting_files", "BrainHiC", "S23_TSS_GZ.txt")
@@ -385,7 +430,7 @@ candidate_genes <- candidate_genes %>%
 remove(cp_path, gz_path, cp_counts, gz_counts)
 ```
 
-### Supporting evidence #6: capture Hi-C data (cell line, not specific to brain)  
+### Supporting evidence #6: capture Hi-C data (cell line, not specific to brain)   
 ```{r GM12878HiC}
 capHiC_path <- here("supporting_files", "capHiC", "GM12878_DRE_number")
 capHiC <- read_delim(capHiC_path, delim = "\t") 
@@ -398,8 +443,8 @@ candidate_genes <- left_join(candidate_genes,
 remove(capHiC_path)
 ```
 
-### Supporting evidence #7: FANTOM5 data  
-I get 66899 enhancer-promoter links after filtering for FDR < 1 (mentioned in iRIGS paper's methods)!   
+### Supporting evidence #7: FANTOM5 data    
+I get 66899 enhancer-promoter links after filtering for FDR < 1 (mentioned in iRIGS paper's methods)!    
 ```{r addingFANTOM5}
 FANTOM_path <- here("supporting_files", "Fantom5", "enhancer_tss_associations.bed.txt")
 FANTOM5_data <- read_delim(FANTOM_path, delim = "\t")  ## 66942 rows
@@ -435,22 +480,22 @@ candidate_genes <- candidate_genes %>%
 remove(FANTOM_path, FANTOM5_enhancer_count)
 ```
 
-## Calculating and combining p-values
+## Calculating and combining p-values  
 
-**CHANGES from original code:**
-
+**CHANGES from original code:**  
 * replaced missing values in capHiC column with 0, to match how missing values were handled in other enhancer columns    
-* kept surrogate Bayes factor for each gene-SNP pair (used SNP ID and alias_symbol to retrieve during Gibbs sampling)  
- 
-{?? why did original code appear to keep only one "extra_weight" (the first match) per unique gene/"official_name" value?}  
-{?? The Mahalanobis transformation is supposed to create variables that follow the univariable Gaussian (normal) distribution but I feel like the transformed variables don't...}  
-{?? Why is dnm probability calculated using a hard-coded number: 20,000?}  
-{?? why get negative log of the final "extra_weights"? To get bigger numbers when meta p-value is small?}   
+* kept surrogate Bayes factor for each gene-SNP pair (use SNP ID and alias_symbol to retrieve during Gibbs sampling)    
+
+Questions (also mentioned in Intro):    
+{? why did original code appear to keep only one "extra_weight" (surrogate Bayes factor, the first match) per unique gene/"official_name" value?}    
+{? The Mahalanobis transformation is supposed to create variables that follow the univariable Gaussian (normal) distribution but I don't think they do based on the EDA...}   
+{? Why is dnm probability calculated using a hard-coded number: 20,000?}      
+{? why get negative log of the final "extra_weights"? Maybe to get a continuous measure  (https://lesslikely.com/statistics/s-values/), or to get bigger numbers when meta p-value is small?}     
 
 ### Mahalanobis transformation (ZCA whitening)   
 
-* Done on DTS, enhancer columns of supporting data (capHiC, FANTOM5, brain-specific HiC)  
-* This creates uncorrelated variables, which can then be used to find p-values  
+* Done on DTS, enhancer columns of supporting data (capHiC, FANTOM5, brain-specific HiC)    
+* This creates uncorrelated variables, which can then be used to find p-values   
 ```{r getMahalCols}  
 ## process data to get mean-centered values  
 zca_cols <- c('DTS', 'cap4_enhancer_no', 'fantom5_enhancer_no', 'cp_enhancer_no', 'gz_enhancer_no')
@@ -460,9 +505,10 @@ extra_evidence <- candidate_genes %>% select(zca_cols)
 summary(extra_evidence)
 ```
 
-Notice that only one column has NA values: cap4_enhancer_no. This is because DTS is calculated from genomic coordinates and the other enhancer columns replaced their missing values with 0 (in the original code, the default value for the columns is 0: see extra_evi.R.  
+Notice that only one column has NA values: cap4_enhancer_no. This is because DTS is calculated from genomic coordinates and the other enhancer columns replaced their missing values with 0 (in the original R code, the default value for the columns is 0: see extra_evi.R).    
 
-The original code replaces the missing values here, aka cap4_enhancer_no's missing values, with the median for the column. I want to treat this column the same as the other enhancer columns, so I replace the 3 missing values with 0.  
+The original R code replaces the missing values here, aka cap4_enhancer_no's missing values, with the median for the column. I want to treat this column the same as the other enhancer columns, so I replace the 3 missing values with 0.    
+
 ```{r MahalNAfill}
 extra_evidence <- extra_evidence %>% 
   mutate(cap4_enhancer_no = replace_na(cap4_enhancer_no, 0))
@@ -497,26 +543,26 @@ colnames(extra_trans) <- colnames(extra_evidence)
 extra_trans <- as.data.frame(extra_trans)  ## df has same row/gene-SNP pairs order as candidate_genes
 ```
 
-With the current setup, we would need to calculate the p-value for the lower tail for the DTS variable and the p-value for the upper tail for the other variables. This is because...  
-
-* DTS: the smaller the number (distance to SNP < expected), the more likely it is to be a disease gene (higher weight)  
-* for the others: the larger the number (number of DRE-promoter links > expected), the more likely it is to be a disease gene (higher weight). Recall the assumption made (Description of iRIGS above).    
+With the current setup, we would need to calculate the p-value for the lower tail for the DTS variable and the p-value for the upper tail for the other variables. This is because...    
+* DTS: the smaller the number (distance to SNP < expected), the more likely it is to be a disease gene (higher weight)   
+* for the others: the larger the number (number of DRE-promoter links > expected), the more likely it is to be a disease gene (higher weight). Recall the assumption made (Description of iRIGS above).     
 
 For the other columns, we flip their signs to flip the tails. Now for all variables, the smaller the number, the more likely it is to be a disease gene.    
+
+Note: the Mahalanobis transformation is supposed to create variables that follow the univariable Gaussian (normal) distribution but I feel like it doesn't given the output of skim
 ```{r switchsign}
 larger_likely_disease <-  c('cap4_enhancer_no', 'fantom5_enhancer_no', 
                             'cp_enhancer_no', 'gz_enhancer_no')
 
 extra_trans <- extra_trans %>% 
   mutate_at(larger_likely_disease, function(x) -x)
+
+skim(extra_trans)
+# qqnorm(extra_trans$DTS)
 ```
 
-Make p-values
+### Make p-values from transformed variables    
 ```{r makep}
-## supposedly all variables now follow univariate standard Gaussian dist, but I don't feel like the plots support this...
-# skim(extra_trans)
-# qqnorm(extra_trans$DTS)
-
 ## run pnorm to get p-values/probabilities for each column
 ## new df has same row/gene-SNP pairs order as candidate_genes
 extra_p <- extra_trans %>% 
@@ -527,8 +573,13 @@ remove(extra_evidence, cov_extra, svd_extra, extra_trans, new_s_diag, svd_newtra
 
 ### Add p-values for DNM and DE data 
 
-Add and process p-values from DNM (de-novo mutation) and DE (differential expression) data. This data is schizophrenia specific.  
-Missing DE p-values are replaced with median (not replaced with 0 because that would make them significant...).   
+Add and process p-values from DNM (de-novo mutation) and DE (differential expression) data.   
+
+Notice:  
+
+* This data is schizophrenia specific.  
+* The hard-coding denominator of 20,000 for the DNM probability calculation. Perhaps can be replaced with a different number?    
+
 ```{r add_DNM_DE_pvalues}
 ## DNM data 
 dnm_prob <- length(unique(dnm$Genes)) / 20000  
@@ -552,8 +603,11 @@ extra_p <- left_join(extra_p,
 
 extra_p <- extra_p %>% select(-Name)  ## remove Name column: used only for merge
 extra_p <- extra_p %>% rename(DE = P.Value)  ## rename column
-## 1309 genes have DE info, 423 have missing values 
+## 1261 genes have DE info, 376 have missing values 
+```
 
+Missing DE p-values should be replaced with the median p-value, rather than giving it a p-value of 0 (aka significant).  
+```{r deNA}
 extra_p <- extra_p %>%   ## replace NAs with median for DE column
   mutate(DE = replace_na(DE, median(extra_p$DE, na.rm = TRUE)))
 
@@ -594,6 +648,8 @@ candidate_genes <- bind_cols(candidate_genes, df_transFisher)
 remove(fishers_chi_df)
 ```
 
+**Optional code chunk: not required to run**
+
 I can explore what's going on with Fisher's method (checking calculations with the metap::sumlog function as well):  
 ```{r pcheck}
 # ## checking calculations
@@ -618,11 +674,17 @@ extra_p[127,]  ## two p-values are very small
 metap::sumlog(extra_p[127,])  ## test stat is high
 ```
 
-## Gibbs sampling: burn-in step
-CHANGES from original code:   
-* Gibbs sampling is not done on SNP loci with only one candidate gene. This is a change from the original code, which would add a sample identical to the previous sample.  
+## Gibbs sampling: burn-in step  
+**CHANGES from original code:**  
 
-Takes me ~ 25 min to run, ~ 606 runs thru all loci with > 1 candidate gene. 
+* Gibbs sampling is not done on SNP loci with only one candidate gene. This is a change from the original code, which would add a sample identical to the previous sample.   
+
+**Thoughts:**   
+* I think we work with square-roots of the threshold and sum of squared differences, so (1) sign/direction of difference won't matter with squaring and (2) we avoid dealing with very small numbers (loss of precision). This way of doing things was in the original R code.    
+* should SNPs with only one candidate gene be removed completely from the candidate gene space for Gibbs sampling? They will bias results because they are always used to calculate the network factors for other loci candidates - however, this may be what we want if we suspect that these candidate genes are highly likely to be disease risk genes.  
+* what should happen in the unlikely scenario that all candidate genes for a SNP are also candidates for other loci (so there will be an empty table for calculating the network factor)? Perhaps we would need to go forward with a new random sample? Or would this "never" happen because users will not choose SNPs close together?  
+
+Takes me ~ 25 min to run, ~ 606 runs thru 101 loci with > 1 candidate gene . 
 ```{r burn-in1, results='hide'}
 t0 <- proc.time()  ## used to record time in system
 
@@ -640,11 +702,11 @@ burnin_gene_counts <- candidate_genes %>%
   select(SNP, alias_symbol) %>% 
   mutate(counts = 0)  
 
-## =set starting set: 1 per SNP locus 
-set.seed(431)  ## for now, set seed to watch stuff
-## note that sample_n works only for local tables
+## starting set: 1 per SNP locus 
+# set.seed(431)  ## to set seed during coding
+## note that sample_n works only for local tables: ref https://dplyr.tidyverse.org/reference/sample.html
 current_geneset <- candidate_genes %>% 
-  group_by(SNP) %>% 
+  group_by(SNP) %>%   ## notice that R automatically sorts table by alphabetical order of this key
   sample_n(1) %>% 
   select(SNP, alias_symbol)
 vector_SNPloci <- current_geneset$SNP  ## so I can iterate in the same order as current_gene_set's rows
@@ -659,12 +721,12 @@ SNPs_with_one_candidate <- candidate_genes %>%
 SNPs_per_round <- length(vector_SNPloci) - nrow(SNPs_with_one_candidate)
 
 ## for debugging code inside the for loop
-# i <- vector_SNPloci[1]
+i <- 'rs115329265'
 
 ## outer loop: checking dif in calculated prob from end of last round and checking number of rounds 
 while (dif > stopping_threshold & burnin_rounds < max_burnin_rounds)
 {
-  ## store Gibbs sample set for the current round
+  ## store Gibbs sample sets for the current round
   burnin_gibbsets <- tibble()  
   
   for (i in vector_SNPloci)  ## inner loop: for each SNP loci...
@@ -684,7 +746,9 @@ while (dif > stopping_threshold & burnin_rounds < max_burnin_rounds)
         otherloci_genes <- otherloci_genes %>% 
           filter(!(alias_symbol %in% currentloci_genes$alias_symbol))
         if (nrow(otherloci_genes) == 0)  
-          ## if this takes out all of the other genes, this would cause issues downstream. I haven't had this flag go off before. Would probably have to be dealt with by drawing a new current_geneset similar to initialization.  
+        ## if this takes out all of the genes, this would cause issues downstream. 
+        ##      I haven't had this flag go off before. Would probably have to be dealt with 
+        ##       by drawing a new current_geneset sample (like what is done at the beginning). 
         {
           stop(paste("Error: too much overlap between the gene set", current_geneset$alias_symbol, 
                      "and the SNP locus", i, "\nled to issue calculating network factor\n"))
@@ -777,9 +841,13 @@ print(proc.time()-t0)
 cat(paste("number of burn-in rounds of Gibbs sampling: ", burnin_rounds))
 ```
 
-## Gibbs sampling: finding sampling probability step
-After burn-in.
-Takes me ~26 min, 619 rounds. 
+## Gibbs sampling: post-burn-in
+
+Keep the current_geneset from the last burn-in round. Start over the counting of genes sampled - these proportions should now approximate the posterior probability.   
+
+**same changes and thoughts noted above for burn-in step**   
+
+Takes me ~26 min, 619 rounds.   
 ```{r postburn, results='hide'}
 ## keep current_geneset from last burn-in round, vector_SNPloci, SNPs_with_one_candidate, SNPs_per_round
 
@@ -913,6 +981,11 @@ cat(paste("number of post-burn-in rounds of Gibbs sampling: ", postburn_rounds))
 
 ## Output
 Will write files and display the final dataframes.    
+**Remember to change the paths/file names for results between runs if you don't want to rewrite your files from previous runs.**   
+
+**CHANGES from original code:**  
+
+* Reproducing the *Nature Methods* paper's Supplementary Table 1 as output  
 ```{r output1}
 cat("Processing and recording the final sampling probabilities!\n")
 
